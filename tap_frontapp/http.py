@@ -58,13 +58,14 @@ class Client(object):
         else:
             response = requests.request(method, url, **kwargs)
 
-        self.calls_remaining = int(response.headers['X-Ratelimit-Remaining'])
-        self.limit_reset = int(float(response.headers['X-Ratelimit-Reset']))
+        self.calls_remaining = int(response.headers('X-Ratelimit-Remaining', self.calls_remaining))
+        self.limit_reset = int(float(response.headers('X-Ratelimit-Reset', self.limit_reset)))
 
         if response.status_code in [429, 503]:
             raise RateLimitException(response.text)
         if response.status_code == 423:
             raise MetricsRateLimitException()
+
         try:
             response.raise_for_status()
         except:
