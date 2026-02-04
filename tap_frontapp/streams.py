@@ -197,15 +197,27 @@ def sync_metric(atx, metric_name, start_date, end_date):
 
         # Normalize metric IDs from API response (camelCase) to schema field names (snake_case)
         metrics_dict = {}
+        # Track key metrics from raw API response for debugging
+        key_metrics_raw = {}
         for report_metric in report_metrics:
             metric_field_id = report_metric.get("id", "")
             metric_value = report_metric.get("value")
+            # Track raw values for key metrics before normalization
+            if metric_field_id in ['avg_first_response_time', 'avg_handle_time', 'avg_response_time', 
+                                   'num_messages_received', 'num_messages_sent', 
+                                   'avgFirstResponseTime', 'avgHandleTime', 'avgResponseTime',
+                                   'numMessagesReceived', 'numMessagesSent']:
+                key_metrics_raw[metric_field_id] = metric_value
             # Convert camelCase to snake_case to match schema field names
             normalized_id = camel_to_snake(metric_field_id)
             metrics_dict[normalized_id] = metric_value
             # Log if normalization changed the ID for debugging
             if metric_field_id != normalized_id:
                 LOGGER.debug(f'Normalized metric ID: "{metric_field_id}" -> "{normalized_id}"')
+        
+        # Log raw API values for key metrics
+        if key_metrics_raw:
+            LOGGER.info(f'Raw API values for key metrics: {key_metrics_raw}')
         
         # Log key metrics that were mentioned in the issue
         key_metrics = [
@@ -285,7 +297,15 @@ def sync_metrics(atx, metric_name):
     # makes better sense once we go into the loop
     current_date = last_date
 
-    while current_date <= end_date:
+    # `end_date` is truncated to midnight. Treat it as an exclusive upper bound so we only
+    # fetch metrics for fully completed days.
+    if current_date >= end_date:
+        LOGGER.info(
+            f'No completed days to sync for {metric_name}. '
+            f'current_date={current_date.to_datetime_string()} end_date={end_date.to_datetime_string()}'
+        )
+
+    while current_date < end_date:
         next_date = current_date + datetime.timedelta(days=1, hours=0)
 
         ut_current_date = int(current_date.timestamp())
