@@ -2,6 +2,7 @@
 
 import time
 import datetime
+import re
 
 import pendulum
 import requests
@@ -65,6 +66,14 @@ METRIC_API_DESCRIPTION_KEY = {
     'teammates_table': 'email',
     'teams_table': 'name',
 }
+
+
+def camel_to_snake(name):
+    """Convert camelCase to snake_case."""
+    # Insert an underscore before any uppercase letter that follows a lowercase letter or digit
+    s1 = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', name)
+    # Insert an underscore before any uppercase letter that follows a lowercase letter
+    return re.sub('([a-z0-9])([A-Z])', r'\1_\2', s1).lower()
 
 
 def count(tap_stream_id, records):
@@ -170,17 +179,74 @@ def sync_metric(atx, metric_name, start_date, end_date):
                 ))
                 report_metrics = get_report_metrics(atx, report_url)
                 if report_metrics != '':
+                    # Log raw response structure for debugging
+                    if report_metrics and len(report_metrics) > 0:
+                        LOGGER.debug(f'Raw API response sample (first metric): {report_metrics[0]}')
                     break
                 else:
+                    LOGGER.debug(f'Metrics not ready yet, polling again in {METRIC_JOB_POLL_SLEEP} seconds...')
                     time.sleep(METRIC_JOB_POLL_SLEEP)
 
+        # Check if we actually received data
+        if not report_metrics:
+            LOGGER.warning(f'No metrics data received from API for {metric_name} {metric_id} ({metric_description})')
+        elif len(report_metrics) == 0:
+            LOGGER.warning(f'Empty metrics array received from API for {metric_name} {metric_id} ({metric_description})')
+        else:
+            LOGGER.info(f'Successfully fetched {len(report_metrics)} metrics from API for {metric_name} {metric_id} ({metric_description})')
+
+        # Normalize metric IDs from API response (camelCase) to schema field names (snake_case)
+        metrics_dict = {}
+        for report_metric in report_metrics:
+            metric_field_id = report_metric.get("id", "")
+            metric_value = report_metric.get("value")
+            # Convert camelCase to snake_case to match schema field names
+            normalized_id = camel_to_snake(metric_field_id)
+            metrics_dict[normalized_id] = metric_value
+            # Log if normalization changed the ID for debugging
+            if metric_field_id != normalized_id:
+                LOGGER.debug(f'Normalized metric ID: "{metric_field_id}" -> "{normalized_id}"')
+        
+        # Log key metrics that were mentioned in the issue
+        key_metrics = [
+            'avg_first_response_time',
+            'avg_handle_time',
+            'avg_response_time',
+            'num_messages_received',
+            'num_messages_sent'
+        ]
+        
+        if metrics_dict:
+            LOGGER.info(f'Processed {len(metrics_dict)} normalized metrics for {metric_name} {metric_id}')
+            # Log values for key metrics
+            key_metrics_found = {}
+            for key_metric in key_metrics:
+                if key_metric in metrics_dict:
+                    value = metrics_dict[key_metric]
+                    key_metrics_found[key_metric] = value
+                    if value is None:
+                        LOGGER.warning(f'Key metric "{key_metric}" has NULL value for {metric_name} {metric_id}')
+                    elif value == 0:
+                        LOGGER.info(f'Key metric "{key_metric}" = 0 for {metric_name} {metric_id}')
+                    else:
+                        LOGGER.info(f'Key metric "{key_metric}" = {value} for {metric_name} {metric_id}')
+                else:
+                    LOGGER.warning(f'Key metric "{key_metric}" not found in API response for {metric_name} {metric_id}')
+            
+            # Log a sample of all metrics (first 5 non-key metrics)
+            sample_metrics = {k: v for k, v in list(metrics_dict.items())[:10] if k not in key_metrics}
+            if sample_metrics:
+                LOGGER.debug(f'Sample metrics (first 10): {sample_metrics}')
+        else:
+            LOGGER.warning(f'No metrics were processed after normalization for {metric_name} {metric_id}')
+        
         record = {
             "report_id": report_url.split('/')[-1],
             "analytics_date": start_date_formatted,
             "analytics_range": 'daily',
             "metric_id": metric_id,
             "metric_description": metric_description,
-            **{report_metric["id"]: report_metric["value"] for report_metric in report_metrics}
+            **metrics_dict
         }
         write_records(metric_name, [record])
 
